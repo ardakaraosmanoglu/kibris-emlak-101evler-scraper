@@ -1,0 +1,11 @@
+asyncio # Built-in
+os # Built-in
+re # Built-in
+urllib.parse # Built-in
+crawl4ai
+beautifulsoup4
+pandas
+tqdm
+requests
+lxml # Required by pandas for read_csv and by beautifulsoup4 for XML parsing
+openpyxl # Required by pandas for excel support, though not directly used, often good to include 

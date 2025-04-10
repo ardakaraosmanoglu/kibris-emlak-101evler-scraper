@@ -1,0 +1,28 @@
+# Python cache
+__pycache__/
+*.pyc
+
+# Virtual environment
+venv/
+.venv/
+env/
+.env
+
+# Generated data and directories
+listings/
+pages/
+temp/
+property_details.csv
+property_details.csv.bak
+failed_urls.txt
+
+# IDE configuration files
+.vscode/
+.idea/
+
+# OS specific files
+.DS_Store
+Thumbs.db
+
+# Log files
+*.log 
