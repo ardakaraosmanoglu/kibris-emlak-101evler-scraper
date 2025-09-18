@@ -7,6 +7,7 @@ from bs4 import BeautifulSoup
 import sys
 import time  # cooldown için
 import random
+import config
 
 # No API key needed for this version
 
@@ -35,9 +36,8 @@ async def extract_listing_links(html, base_url):
     soup = BeautifulSoup(html, 'html.parser')
     links = set()
     
-    # Regex based on user feedback: /kibris/kiralik-emlak/...
-    # Making it flexible for different locations/types ending in .html
-    listing_pattern = re.compile(r'/kibris/(kiralik|satilik)-emlak/[\w-]+(?:/.*)?-\d+\.html')
+    # Regex for property listing pattern based on config
+    listing_pattern = re.compile(config.get_listing_pattern())
     
     anchor_tags = soup.find_all('a', href=listing_pattern)
     print(f"Found {len(anchor_tags)} potential listing anchor tags using pattern.")
@@ -147,20 +147,15 @@ async def save_search_page(html_content, page_num, pages_dir):
 def check_blocked_html(html):
     if not html:
         return False
-    block_phrases = [
-        "Sorry, you have been blocked",
-        "You are unable to access",
-        'data-translate="block_headline"',
-        'data-translate="unable_to_access"'
-    ]
+    block_phrases = config.BLOCK_PHRASES
     for phrase in block_phrases:
         if phrase in html:
             return True
     return False
 
 def handle_access_blocked():
-    """Erişim engellendiğinde yapılacak işlemler: 3 dakika bekle ve tekrar dene"""
-    cooldown_minutes = 3
+    """Erişim engellendiğinde yapılacak işlemler: konfigurasyon süresince bekle ve tekrar dene"""
+    cooldown_minutes = config.TIMING['cooldown_minutes']
     print(f"!!! Erişim engellendi. {cooldown_minutes} dakika bekleniyor ve tekrar denenecek... !!!")
     # 3 dakika bekle
     time.sleep(cooldown_minutes * 60)
@@ -236,15 +231,11 @@ def extract_total_counts(html):
 async def extract_total_counts_from_api(crawler, base_url):
     """JavaScript'in yaptığı gibi API'ye istek yaparak toplam ilan sayısını almaya çalışır"""
     try:
-        api_url = "https://www.101evler.com/ac/arama-sonucu"
-        # JavaScript'te kullanılan parametre dizesi 
-        params = "page=1&s_r=R&property_type=1&city=magusa&property_subtype%5B0%5D=2"
-        headers = {
-            "Content-Type": "application/x-www-form-urlencoded; charset=UTF-8",
-            "X-Requested-With": "XMLHttpRequest",
-            "Accept": "*/*",
-            "Referer": base_url
-        }
+        api_url = config.API_URL
+        # API parametreleri: konfigürasyondan alınır
+        params = config.get_api_params(page=1)
+        headers = config.API_HEADERS.copy()
+        headers["Referer"] = base_url
         
         print("API'den toplam ilan sayısını almaya çalışılıyor...")
         response = await crawler.arun(
@@ -254,8 +245,8 @@ async def extract_total_counts_from_api(crawler, base_url):
             data=params
         )
         
-        if response and response.text:
-            total_listings_str = response.text
+        if response and response.html:
+            total_listings_str = response.html
             try:
                 total_listings = int(total_listings_str)
                 total_pages = max(1, (total_listings + 29) // 30)  # Math.ceil(count/30) eşdeğeri
@@ -276,9 +267,10 @@ async def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('--max-pages', type=int, default=None, help='Maksimum çekilecek sayfa sayısı')
     args = parser.parse_args()
-    base_search_url = "https://www.101evler.com/kibris/kiralik-daire/magusa"
-    output_dir = "listings"
-    pages_dir = "pages"
+    # base_search_url konfigürasyondan alınır
+    base_search_url = config.get_base_search_url()
+    output_dir = config.OUTPUT_DIR
+    pages_dir = config.PAGES_DIR
     all_listing_links = set()
     
     # Create pages directory if it doesn't exist
@@ -296,16 +288,12 @@ async def main():
     print(f"Starting link extraction from search pages...")
 
     async with AsyncWebCrawler(
-        headers={
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36",
-            "Accept-Language": "en-US,en;q=0.9",
-            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,image/apng,*/*;q=0.8"
-        }
+        headers=config.HEADERS
     ) as crawler:
         
         # 1. Scrape search result pages using PLAYWRIGHT to gather listing links
         first_page_num = 1
-        search_page_url = f"{base_search_url}?&page={first_page_num}"
+        search_page_url = config.get_search_url_with_page(first_page_num)
         html = await scrape_page(search_page_url, crawler, use_playwright=True)
         if check_blocked_html(html):
             handle_access_blocked()
@@ -353,7 +341,7 @@ async def main():
         
         # Kalan sayfalar için döngü
         for page_num in range(2, max_search_pages + 1):
-            search_page_url = f"{base_search_url}?&page={page_num}"
+            search_page_url = config.get_search_url_with_page(page_num)
             print(f"\n--- Processing Search Page {page_num}/{max_search_pages} for links --- ")
             
             # Check if this search page already exists
@@ -403,7 +391,7 @@ async def main():
             # Add a random component to the delay to make the scraping pattern less predictable
             # Only wait if we're fetching the next page (not on the last page)
             if page_num < max_search_pages and page_num not in existing_search_pages:
-                random_delay = 1.2 + (page_num % 3) * 0.3  # 1.2-2.1 seconds based on page number
+                random_delay = config.TIMING['search_page_delay_base'] + (page_num % 3) * 0.3
                 print(f"Waiting {random_delay:.1f} seconds before next search page...")
                 await asyncio.sleep(random_delay)
 
@@ -434,11 +422,11 @@ async def main():
         for listing_url in new_listing_links:
              tasks.append(scrape_and_save_listing(listing_url, crawler, output_dir))
              
-        # Reduced batch size from 5 to 3
-        batch_size = 3 
+        # Batch size konfigürasyondan alınır
+        batch_size = config.BATCH_SIZE 
         
         # Create subdirectory for failed listings to retry later
-        failed_dir = os.path.join(output_dir, "failed")
+        failed_dir = os.path.join(output_dir, config.FAILED_DIR)
         if not os.path.exists(failed_dir):
             os.makedirs(failed_dir)
             
@@ -485,8 +473,8 @@ async def main():
                  print(f"🎯 Estimated finish: {finish_time.strftime('%H:%M:%S')} (in {estimated_remaining_time/60:.1f} minutes)")
              
              if i + batch_size < len(tasks):
-                 # 0.8-1.2 saniye arası random delay
-                 batch_delay = 0.8 + random.random() * 0.4
+                 # Konfigürasyondan batch delay
+                 batch_delay = config.TIMING['batch_delay_min'] + random.random() * (config.TIMING['batch_delay_max'] - config.TIMING['batch_delay_min'])
                  print(f"Waiting {batch_delay:.1f} seconds before next batch...")
                  await asyncio.sleep(batch_delay)
 
@@ -519,8 +507,8 @@ async def scrape_and_save_listing(url, crawler, output_dir):
             print("!!! Erişim engellendi. Script durduruluyor. !!!")
             exit(1)  # İkinci denemede de engellenirse sonlandır
     await save_html_to_file(html_content, url, output_dir)
-    # Add a slight random variation to the delay (1.2-1.7 seconds)
-    random_delay = 1.2 + random.random() * 0.5
+    # Add a slight random variation to the delay based on config
+    random_delay = config.TIMING['listing_delay_min'] + random.random() * (config.TIMING['listing_delay_max'] - config.TIMING['listing_delay_min'])
     await asyncio.sleep(random_delay)
 
 if __name__ == "__main__":
