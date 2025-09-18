@@ -4,6 +4,9 @@ import re
 from urllib.parse import urljoin, urlparse
 from crawl4ai import AsyncWebCrawler
 from bs4 import BeautifulSoup
+import sys
+import time  # cooldown için
+import random
 
 # No API key needed for this version
 
@@ -141,9 +144,139 @@ async def save_search_page(html_content, page_num, pages_dir):
     except Exception as e:
         print(f"  Error saving HTML for search page {page_num}: {e}")
 
+def check_blocked_html(html):
+    if not html:
+        return False
+    block_phrases = [
+        "Sorry, you have been blocked",
+        "You are unable to access",
+        'data-translate="block_headline"',
+        'data-translate="unable_to_access"'
+    ]
+    for phrase in block_phrases:
+        if phrase in html:
+            return True
+    return False
+
+def handle_access_blocked():
+    """Erişim engellendiğinde yapılacak işlemler: 3 dakika bekle ve tekrar dene"""
+    cooldown_minutes = 3
+    print(f"!!! Erişim engellendi. {cooldown_minutes} dakika bekleniyor ve tekrar denenecek... !!!")
+    # 3 dakika bekle
+    time.sleep(cooldown_minutes * 60)
+    print(f"{cooldown_minutes} dakika bekleme süresi doldu. Tekrar deneniyor...")
+    return
+
+def extract_total_counts(html):
+    import re
+    total_listings = None
+    total_pages = None
+    
+    # 1. Sayfa numarasını HTML'den direkt tespit etmeye çalış
+    match = re.search(r'<span id="page_number">(\d+)</span>', html)
+    if match and match.group(1) != "1":  # Eğer "1" değilse JavaScript tarafından güncellenmiş demektir
+        total_pages = int(match.group(1))
+        print(f"HTML'den toplam sayfa sayısı: {total_pages}")
+    
+    # 2. Toplam ilan sayısını bul (count_label)
+    match = re.search(r'([\d\.]+)\s*Sonuç Bulundu', html)
+    if match:
+        try:
+            total_listings = int(match.group(1).replace('.', ''))
+            print(f"HTML'den toplam ilan sayısı: {total_listings}")
+            # Toplam sayfa sayısını hesapla (JavaScript'in yaptığı gibi)
+            if total_listings is not None and total_pages is None:
+                total_pages = max(1, (total_listings + 29) // 30)  # Math.ceil(count/30) eşdeğeri
+                print(f"Toplam ilan sayısından hesaplanan sayfa sayısı: {total_pages}")
+        except:
+            pass
+    
+    # 3. Pagination select options'dan tespit et
+    if total_pages is None:
+        options = re.findall(r'<option[^>]*value="[^"]*[?&]page=(\d+)[^"]*"[^>]*>(\d+)</option>', html)
+        if options:
+            try:
+                highest_page = max([int(page[0]) for page in options])
+                if highest_page > 1:  # En az 2 varsa JavaScript çalışmış demektir
+                    total_pages = highest_page
+                    print(f"Pagination options'dan tespit edilen sayfa sayısı: {total_pages}")
+            except:
+                pass
+    
+    # 4. next/son sayfa butonunda URL'den tespit et
+    if total_pages is None:
+        match = re.search(r'<a[^>]*href="[^"]*[?&]page=(\d+)[^"]*"[^>]*>.*?Son.*?</a>', html)
+        if match:
+            try:
+                total_pages = int(match.group(1))
+                print(f"Son sayfa butonundan tespit edilen sayfa sayısı: {total_pages}")
+            except:
+                pass
+    
+    # 5. Sayfadaki ilanları say ve bundan tahmin et (fallback)
+    if total_listings is None:
+        items_count = len(re.findall(r'class="ilanitem(cardorange|basic)"', html))
+        # İlan sayısı ile sayfa başına ilan sayısını hesapla
+        if items_count > 0:
+            total_listings = items_count  # Bu sadece ilk sayfadaki ilan sayısı
+            print(f"Sayfada tespit edilen ilan sayısı: {items_count}")
+    
+    # 6. Tahmin: Sayfada hiç ilan yoksa ve total_pages hala null ise 1 sayfadır
+    if total_listings == 0 and total_pages is None:
+        total_pages = 1
+        print("Sayfada hiç ilan yok, 1 sayfa olduğu varsayılıyor.")
+    
+    # Güvenlik: varsayılan değerler
+    if total_pages is None:
+        total_pages = 30  # Varsayılan değer
+        print(f"Toplam sayfa sayısı tespit edilemedi, varsayılan: {total_pages}")
+    
+    return total_listings, total_pages
+
+async def extract_total_counts_from_api(crawler, base_url):
+    """JavaScript'in yaptığı gibi API'ye istek yaparak toplam ilan sayısını almaya çalışır"""
+    try:
+        api_url = "https://www.101evler.com/ac/arama-sonucu"
+        # JavaScript'te kullanılan parametre dizesi 
+        params = "page=1&s_r=R&property_type=1&city=magusa&property_subtype%5B0%5D=2"
+        headers = {
+            "Content-Type": "application/x-www-form-urlencoded; charset=UTF-8",
+            "X-Requested-With": "XMLHttpRequest",
+            "Accept": "*/*",
+            "Referer": base_url
+        }
+        
+        print("API'den toplam ilan sayısını almaya çalışılıyor...")
+        response = await crawler.arun(
+            url=api_url, 
+            method="POST",
+            headers=headers,
+            data=params
+        )
+        
+        if response and response.text:
+            total_listings_str = response.text
+            try:
+                total_listings = int(total_listings_str)
+                total_pages = max(1, (total_listings + 29) // 30)  # Math.ceil(count/30) eşdeğeri
+                print(f"API'den alınan toplam ilan sayısı: {total_listings}")
+                print(f"API'den hesaplanan toplam sayfa sayısı: {total_pages}")
+                return total_listings, total_pages
+            except:
+                print(f"API yanıtı sayıya dönüştürülemedi: {total_listings_str}")
+        else:
+            print("API'den yanıt alınamadı")
+    except Exception as e:
+        print(f"API isteği sırasında hata: {e}")
+        
+    return None, None
+
 async def main():
+    import argparse
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--max-pages', type=int, default=None, help='Maksimum çekilecek sayfa sayısı')
+    args = parser.parse_args()
     base_search_url = "https://www.101evler.com/kibris/kiralik-daire/magusa"
-    max_search_pages = 5 # Number of search result pages to scrape for links
     output_dir = "listings"
     pages_dir = "pages"
     all_listing_links = set()
@@ -171,7 +304,55 @@ async def main():
     ) as crawler:
         
         # 1. Scrape search result pages using PLAYWRIGHT to gather listing links
-        for page_num in range(1, max_search_pages + 1):
+        first_page_num = 1
+        search_page_url = f"{base_search_url}?&page={first_page_num}"
+        html = await scrape_page(search_page_url, crawler, use_playwright=True)
+        if check_blocked_html(html):
+            handle_access_blocked()
+            # Tekrar ilk sayfayı çek
+            html = await scrape_page(search_page_url, crawler, use_playwright=True)
+            if check_blocked_html(html):
+                print("!!! Erişim engellendi. Script durduruluyor. !!!")
+                exit(1)  # İkinci denemede de engellenirse sonlandır
+        if not html:
+            print("İlk arama sayfası çekilemedi. Script duruyor.")
+            return
+        
+        # Önce API'den toplam sayıları almayı dene
+        total_listings_api, total_pages_api = await extract_total_counts_from_api(crawler, search_page_url)
+        
+        # Sonra HTML'den tespit et
+        total_listings_html, total_pages_html = extract_total_counts(html)
+        
+        # API'den ve HTML'den alınan değerleri önceliklendirme
+        total_listings = total_listings_api if total_listings_api else total_listings_html
+        total_pages = total_pages_api if total_pages_api else total_pages_html
+        
+        if total_listings:
+            print(f"Toplam ilan: {total_listings}")
+        if total_pages:
+            print(f"Toplam sayfa: {total_pages}")
+            
+        # Kullanıcı override etmediyse otomatik max_search_pages belirle
+        if args.max_pages:
+            max_search_pages = args.max_pages
+            print(f"Kullanıcı tarafından belirlenen maksimum sayfa: {max_search_pages}")
+        elif total_pages:
+            max_search_pages = total_pages
+            print(f"Otomatik tespit edilen maksimum sayfa: {max_search_pages}")
+        else:
+            max_search_pages = 30
+            print(f"Sayfa sayısı tespit edilemedi, varsayılan: {max_search_pages}")
+        
+        # İlk sayfa kaydedilsin
+        await save_search_page(html, first_page_num, pages_dir)
+        base_for_relative = search_page_url.split('?')[0]
+        links_on_page = await extract_listing_links(html, base_for_relative)
+        all_listing_links.update(links_on_page)
+        print(f"Total unique links found so far: {len(all_listing_links)}")
+        
+        # Kalan sayfalar için döngü
+        for page_num in range(2, max_search_pages + 1):
             search_page_url = f"{base_search_url}?&page={page_num}"
             print(f"\n--- Processing Search Page {page_num}/{max_search_pages} for links --- ")
             
@@ -198,18 +379,32 @@ async def main():
                     await save_search_page(html, page_num, pages_dir)
             
             if html:
+                if check_blocked_html(html):
+                    handle_access_blocked()
+                    # Tekrar aynı sayfayı çek
+                    html = await scrape_page(search_page_url, crawler, use_playwright=True)
+                    if check_blocked_html(html):
+                        print("!!! Erişim engellendi. Script durduruluyor. !!!")
+                        exit(1)  # İkinci denemede de engellenirse sonlandır
+                    if not html:
+                        print(f"Sayfa {page_num} tekrar çekilemedi. Sonraki sayfaya geçiliyor.")
+                        continue
                 base_for_relative = search_page_url.split('?')[0]
                 links_on_page = await extract_listing_links(html, base_for_relative)
                 all_listing_links.update(links_on_page)
                 print(f"Total unique links found so far: {len(all_listing_links)}")
+                # Eğer hiç ilan yoksa, bu muhtemelen son sayfa, döngüyü kır
+                if not links_on_page:
+                    print(f"Sayfa {page_num} boş, muhtemelen son sayfa. Tarama durduruluyor.")
+                    break
             else:
                 print(f"Skipping search page {page_num} due to fetch error or empty content.")
             
             # Add a random component to the delay to make the scraping pattern less predictable
             # Only wait if we're fetching the next page (not on the last page)
             if page_num < max_search_pages and page_num not in existing_search_pages:
-                random_delay = 4 + (page_num % 3)  # 4-6 seconds based on page number
-                print(f"Waiting {random_delay} seconds before next search page...")
+                random_delay = 1.2 + (page_num % 3) * 0.3  # 1.2-2.1 seconds based on page number
+                print(f"Waiting {random_delay:.1f} seconds before next search page...")
                 await asyncio.sleep(random_delay)
 
         print(f"\nFound a total of {len(all_listing_links)} unique listing links.")
@@ -247,9 +442,15 @@ async def main():
         if not os.path.exists(failed_dir):
             os.makedirs(failed_dir)
             
+        # Start time for batch processing estimation
+        import datetime
+        batch_start_time = time.time()
+        total_batches = (len(tasks) + batch_size - 1) // batch_size
+            
         for i in range(0, len(tasks), batch_size):
              batch = tasks[i:i+batch_size]
-             print(f"\nProcessing batch {i//batch_size + 1}/{(len(tasks) + batch_size - 1)//batch_size}...")
+             current_batch = i//batch_size + 1
+             print(f"\nProcessing batch {current_batch}/{total_batches}...")
              
              # Gather results to check for failures
              results = await asyncio.gather(*batch, return_exceptions=True)
@@ -265,10 +466,28 @@ async def main():
                          with open(os.path.join(failed_dir, "failed_urls.txt"), "a") as f:
                              f.write(f"{failed_url}\n")
              
+             # Calculate and display estimated finish time
+             elapsed_time = time.time() - batch_start_time
+             if current_batch > 0:
+                 avg_time_per_batch = elapsed_time / current_batch
+                 remaining_batches = total_batches - current_batch
+                 estimated_remaining_time = remaining_batches * avg_time_per_batch
+                 
+                 # Add estimated delay time for remaining batches
+                 if remaining_batches > 0:
+                     estimated_delay_time = remaining_batches * 1  # Average delay of 1 second
+                     estimated_remaining_time += estimated_delay_time
+                 
+                 finish_time = datetime.datetime.now() + datetime.timedelta(seconds=estimated_remaining_time)
+                 
+                 print(f"📊 Progress: {current_batch}/{total_batches} batches completed")
+                 print(f"⏱️  Elapsed: {elapsed_time/60:.1f} minutes")
+                 print(f"🎯 Estimated finish: {finish_time.strftime('%H:%M:%S')} (in {estimated_remaining_time/60:.1f} minutes)")
+             
              if i + batch_size < len(tasks):
-                 # Add a random component to the delay to make the scraping pattern less predictable
-                 batch_delay = 8 + (i // batch_size % 5) # 8-12 seconds
-                 print(f"Waiting {batch_delay} seconds before next batch...")
+                 # 0.8-1.2 saniye arası random delay
+                 batch_delay = 0.8 + random.random() * 0.4
+                 print(f"Waiting {batch_delay:.1f} seconds before next batch...")
                  await asyncio.sleep(batch_delay)
 
     print("\n--- Scraping Complete --- ")
@@ -292,11 +511,16 @@ async def main():
 async def scrape_and_save_listing(url, crawler, output_dir):
     # Scrape single listing page WITHOUT Playwright
     html_content = await scrape_page(url, crawler, use_playwright=False) 
+    if check_blocked_html(html_content):
+        handle_access_blocked()
+        # Tekrar dene
+        html_content = await scrape_page(url, crawler, use_playwright=False)
+        if check_blocked_html(html_content):
+            print("!!! Erişim engellendi. Script durduruluyor. !!!")
+            exit(1)  # İkinci denemede de engellenirse sonlandır
     await save_html_to_file(html_content, url, output_dir)
-    
-    # Add a slight random variation to the delay (4-5 seconds)
-    import random
-    random_delay = 4 + random.random()
+    # Add a slight random variation to the delay (1.2-1.7 seconds)
+    random_delay = 1.2 + random.random() * 0.5
     await asyncio.sleep(random_delay)
 
 if __name__ == "__main__":

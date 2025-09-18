@@ -1,0 +1,773 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Property Listings Dashboard</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            margin: 20px;
+            background-color: #f5f5f5;
+        }
+        .container {
+            max-width: 1200px;
+            margin: 0 auto;
+            background-color: #fff;
+            padding: 20px;
+            border-radius: 8px;
+            box-shadow: 0 0 10px rgba(0,0,0,0.1);
+        }
+        h1 {
+            color: #2c3e50;
+            text-align: center;
+            margin-bottom: 20px;
+        }
+        .filters {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 15px;
+            margin-bottom: 20px;
+            padding: 15px;
+            background-color: #f8f9fa;
+            border-radius: 5px;
+        }
+        .filter-group {
+            display: flex;
+            flex-direction: column;
+            min-width: 150px;
+        }
+        .filter-group label {
+            margin-bottom: 5px;
+            font-weight: bold;
+            color: #2c3e50;
+        }
+        .filter-group input, .filter-group select {
+            padding: 8px;
+            border: 1px solid #ddd;
+            border-radius: 4px;
+        }
+        button {
+            padding: 8px 15px;
+            background-color: #3498db;
+            color: white;
+            border: none;
+            border-radius: 4px;
+            cursor: pointer;
+            font-weight: bold;
+            transition: background-color 0.3s;
+        }
+        button:hover {
+            background-color: #2980b9;
+        }
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            margin-top: 20px;
+        }
+        thead {
+            position: sticky;
+            top: 0;
+            background-color: #fff;
+        }
+        .table-container {
+            max-height: 600px;
+            overflow-y: auto;
+            margin-top: 20px;
+        }
+        th, td {
+            border: 1px solid #ddd;
+            padding: 10px;
+            text-align: left;
+        }
+        th {
+            background-color: #3498db;
+            color: white;
+        }
+        tr:nth-child(even) {
+            background-color: #f2f2f2;
+        }
+        tr:hover {
+            background-color: #e9f7fe;
+        }
+        .image-cell img {
+            width: 100px;
+            height: 75px;
+            object-fit: cover;
+            border-radius: 4px;
+        }
+        .pagination {
+            display: flex;
+            justify-content: center;
+            margin-top: 20px;
+            gap: 5px;
+        }
+        .pagination button {
+            padding: 5px 10px;
+        }
+        .summary {
+            margin-top: 15px;
+            font-weight: bold;
+            color: #2c3e50;
+        }
+        .loading {
+            text-align: center;
+            padding: 20px;
+            font-size: 18px;
+            color: #3498db;
+        }
+        @media (max-width: 768px) {
+            .filters {
+                flex-direction: column;
+            }
+            .filter-group {
+                width: 100%;
+            }
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>Property Listings</h1>
+        
+        <div class="filters">
+            <form id="filter-form" onsubmit="return false;">
+                <div class="filter-group">
+                    <label for="price-min">Min TL Price:</label>
+                    <input type="number" id="price-min" min="0" placeholder="e.g. 250000">
+                </div>
+                
+                <div class="filter-group">
+                    <label for="price-max">Max TL Price:</label>
+                    <input type="number" id="price-max" min="0" placeholder="e.g. 500000">
+                </div>
+                
+                <div class="filter-group">
+                    <label for="days-old">Updated Within Last (Days):</label>
+                    <input type="number" id="days-old" min="0" value="0" placeholder="e.g. 30">
+                </div>
+                
+                <div class="filter-group">
+                    <label for="district">District (Bölge):</label>
+                    <select id="district">
+                        <option value="">All Districts</option>
+                    </select>
+                </div>
+                
+                <div class="filter-group">
+                    <label for="room-count">Room Count:</label>
+                    <select id="room-count">
+                        <option value="">All</option>
+                    </select>
+                </div>
+                
+                <div class="filter-group" style="justify-content: flex-end;">
+                    <button type="button" id="apply-filters" style="margin-top: auto;">Apply Filters</button>
+                    <button type="button" id="reset-filters" style="margin-top: 5px; background-color: #e74c3c;">Reset</button>
+                </div>
+            </form>
+        </div>
+        
+        <div class="summary">
+            Showing <span id="showing-count">0</span> of <span id="total-count">0</span> listings
+            <span id="cache-status" style="margin-left: 20px; font-size: 12px; color: #3498db;"></span>
+        </div>
+        
+        <div class="table-container">
+            <table id="property-table">
+                <thead>
+                    <tr>
+                        <th>Image</th>
+                        <th>Title</th>
+                        <th>District</th>
+                        <th>Room Count</th>
+                        <th>Price</th>
+                        <th>TL Price</th>
+                        <th>Update Date</th>
+                        <th>Details</th>
+                    </tr>
+                </thead>
+                <tbody id="property-list">
+                    <tr>
+                        <td colspan="8" class="loading">Loading property data...</td>
+                    </tr>
+                </tbody>
+            </table>
+        </div>
+    </div>
+
+    <script>
+        document.addEventListener('DOMContentLoaded', function() {
+            // Initial variables
+            let propertyData = [];
+            let filteredData = [];
+            const today = new Date();
+            let isFiltering = false; // Flag to prevent multiple filter operations
+            const IMAGE_CACHE_PREFIX = 'property_img_';
+            const CACHE_EXPIRATION = 7 * 24 * 60 * 60 * 1000; // 7 days in milliseconds
+            const MAX_CACHE_SIZE = 50 * 1024 * 1024; // 50MB cache limit
+            
+            // Image cache management
+            const imageCache = {
+                // Check if image exists in cache
+                getFromCache: function(url) {
+                    try {
+                        const cacheKey = IMAGE_CACHE_PREFIX + this.hashUrl(url);
+                        const cachedData = localStorage.getItem(cacheKey);
+                        
+                        if (!cachedData) return null;
+                        
+                        const cacheItem = JSON.parse(cachedData);
+                        
+                        // Check if cache has expired
+                        if (Date.now() - cacheItem.timestamp > CACHE_EXPIRATION) {
+                            localStorage.removeItem(cacheKey);
+                            return null;
+                        }
+                        
+                        return cacheItem.data;
+                    } catch (error) {
+                        console.error('Error getting image from cache:', error);
+                        return null;
+                    }
+                },
+                
+                // Save image to cache
+                saveToCache: function(url, data) {
+                    try {
+                        const cacheKey = IMAGE_CACHE_PREFIX + this.hashUrl(url);
+                        const cacheItem = {
+                            timestamp: Date.now(),
+                            data: data
+                        };
+                        
+                        // Check current cache size before saving
+                        this.manageCacheSize();
+                        
+                        localStorage.setItem(cacheKey, JSON.stringify(cacheItem));
+                    } catch (error) {
+                        console.error('Error saving image to cache:', error);
+                        // If storage is full, clear older items
+                        if (error.name === 'QuotaExceededError') {
+                            this.clearOldestCache(10);
+                        }
+                    }
+                },
+                
+                // Generate a simple hash for URLs
+                hashUrl: function(url) {
+                    let hash = 0;
+                    for (let i = 0; i < url.length; i++) {
+                        const char = url.charCodeAt(i);
+                        hash = ((hash << 5) - hash) + char;
+                        hash = hash & hash; // Convert to 32bit integer
+                    }
+                    return Math.abs(hash).toString(16);
+                },
+                
+                // Manage cache size
+                manageCacheSize: function() {
+                    try {
+                        let totalSize = 0;
+                        const cacheItems = [];
+                        
+                        // Calculate current cache size
+                        for (let i = 0; i < localStorage.length; i++) {
+                            const key = localStorage.key(i);
+                            if (key.startsWith(IMAGE_CACHE_PREFIX)) {
+                                const value = localStorage.getItem(key);
+                                const size = value.length * 2; // Rough estimation of string size in bytes
+                                totalSize += size;
+                                
+                                const item = JSON.parse(value);
+                                cacheItems.push({
+                                    key: key,
+                                    timestamp: item.timestamp,
+                                    size: size
+                                });
+                            }
+                        }
+                        
+                        // If cache size exceeds limit, remove oldest items
+                        if (totalSize > MAX_CACHE_SIZE && cacheItems.length > 0) {
+                            // Sort by timestamp (oldest first)
+                            cacheItems.sort((a, b) => a.timestamp - b.timestamp);
+                            
+                            // Remove oldest items until we're under the limit
+                            let i = 0;
+                            while (totalSize > MAX_CACHE_SIZE * 0.8 && i < cacheItems.length) {
+                                localStorage.removeItem(cacheItems[i].key);
+                                totalSize -= cacheItems[i].size;
+                                i++;
+                            }
+                        }
+                    } catch (error) {
+                        console.error('Error managing cache size:', error);
+                    }
+                },
+                
+                // Clear oldest cache items
+                clearOldestCache: function(count) {
+                    try {
+                        const cacheItems = [];
+                        
+                        // Collect all cache items
+                        for (let i = 0; i < localStorage.length; i++) {
+                            const key = localStorage.key(i);
+                            if (key.startsWith(IMAGE_CACHE_PREFIX)) {
+                                const item = JSON.parse(localStorage.getItem(key));
+                                cacheItems.push({
+                                    key: key,
+                                    timestamp: item.timestamp
+                                });
+                            }
+                        }
+                        
+                        // Sort by timestamp (oldest first)
+                        cacheItems.sort((a, b) => a.timestamp - b.timestamp);
+                        
+                        // Remove oldest 'count' items
+                        const itemsToRemove = Math.min(count, cacheItems.length);
+                        for (let i = 0; i < itemsToRemove; i++) {
+                            localStorage.removeItem(cacheItems[i].key);
+                        }
+                    } catch (error) {
+                        console.error('Error clearing oldest cache:', error);
+                    }
+                },
+                
+                // Load image with caching
+                loadImage: function(url, imgElement) {
+                    if (!url || typeof url !== 'string' || !url.startsWith('http')) {
+                        imgElement.src = '';
+                        imgElement.alt = 'No image available';
+                        return;
+                    }
+                    
+                    // Clean URL (remove spaces, quotes, etc.)
+                    url = url.trim().replace(/^["']|["']$/g, '');
+                    
+                    // Try to get from cache first
+                    const cachedImage = this.getFromCache(url);
+                    
+                    if (cachedImage) {
+                        // Use cached image
+                        imgElement.src = cachedImage;
+                        return;
+                    }
+                    
+                    // Set direct URL first for immediate display while attempting to cache
+                    imgElement.src = url;
+                    
+                    // Set error handler in case direct loading fails
+                    imgElement.onerror = () => {
+                        imgElement.src = '';
+                        imgElement.alt = 'Image unavailable';
+                    };
+                    
+                    // We'll try to cache in background without blocking display
+                    // Skip fetch/caching for now since it's causing CORS issues
+                    // Just let the browser handle the image loading directly
+                }
+            };
+            
+            // Function to parse CSV
+            function parseCSV(text) {
+                try {
+                    const lines = text.split('\n');
+                    const headers = lines[0].split(',');
+                    
+                    // Process headers to remove quotes
+                    for (let i = 0; i < headers.length; i++) {
+                        headers[i] = headers[i].replace(/^"(.+)"$/, '$1');
+                    }
+                    
+                    const result = [];
+                    
+                    for (let i = 1; i < lines.length; i++) {
+                        if (!lines[i].trim()) continue;
+                        
+                        // Handle CSV complexities with quotes and commas
+                        const values = [];
+                        let currentValue = '';
+                        let inQuotes = false;
+                        
+                        for (let j = 0; j < lines[i].length; j++) {
+                            const char = lines[i][j];
+                            
+                            if (char === '"') {
+                                inQuotes = !inQuotes;
+                            } else if (char === ',' && !inQuotes) {
+                                values.push(currentValue);
+                                currentValue = '';
+                            } else {
+                                currentValue += char;
+                            }
+                        }
+                        
+                        values.push(currentValue);
+                        
+                        const row = {};
+                        for (let j = 0; j < headers.length; j++) {
+                            if (j < values.length) {
+                                row[headers[j]] = values[j].replace(/^"(.+)"$/, '$1');
+                            } else {
+                                row[headers[j]] = '';
+                            }
+                        }
+                        
+                        result.push(row);
+                    }
+                    
+                    return result;
+                } catch (error) {
+                    console.error('Error parsing CSV:', error);
+                    return [];
+                }
+            }
+            
+            // Function to format date from DD/MM/YYYY to Date object
+            function parseDate(dateStr) {
+                if (!dateStr || typeof dateStr !== 'string') return null;
+                try {
+                    const parts = dateStr.split('/');
+                    if (parts.length !== 3) return null;
+                    return new Date(parts[2], parts[1] - 1, parts[0]);
+                } catch (error) {
+                    console.error('Error parsing date:', error, dateStr);
+                    return null;
+                }
+            }
+            
+            // Function to calculate days difference between two dates
+            function daysDifference(date1, date2) {
+                if (!date1 || !date2) return 0;
+                try {
+                    const diffTime = Math.abs(date2 - date1);
+                    return Math.ceil(diffTime / (1000 * 60 * 60 * 24));
+                } catch (error) {
+                    console.error('Error calculating days difference:', error);
+                    return 0;
+                }
+            }
+            
+            // Debounce function to prevent multiple rapid executions
+            function debounce(func, wait) {
+                let timeout;
+                return function(...args) {
+                    clearTimeout(timeout);
+                    timeout = setTimeout(() => func.apply(this, args), wait);
+                };
+            }
+            
+            // Function to apply filters
+            function applyFilters() {
+                if (isFiltering) return; // Prevent multiple simultaneous filter operations
+                
+                try {
+                    isFiltering = true;
+                    document.body.style.cursor = 'wait';
+                    
+                    const minPrice = document.getElementById('price-min').value ? parseFloat(document.getElementById('price-min').value) : 0;
+                    const maxPrice = document.getElementById('price-max').value ? parseFloat(document.getElementById('price-max').value) : Infinity;
+                    const daysOld = document.getElementById('days-old').value ? parseInt(document.getElementById('days-old').value) : 0;
+                    const district = document.getElementById('district').value;
+                    const roomCount = document.getElementById('room-count').value;
+                    
+                    filteredData = propertyData.filter(property => {
+                        try {
+                            const priceTL = parseFloat(property.price_tl_14x);
+                            const updateDate = parseDate(property.update_date);
+                            const daysSinceUpdate = updateDate ? daysDifference(updateDate, today) : 0;
+                            
+                            return (
+                                (isNaN(priceTL) || (priceTL >= minPrice && priceTL <= maxPrice)) &&
+                                (daysOld === 0 || daysSinceUpdate <= daysOld) &&
+                                (!district || property.district === district) &&
+                                (!roomCount || property.room_count === roomCount)
+                            );
+                        } catch (error) {
+                            console.error('Error filtering property:', error, property);
+                            return false;
+                        }
+                    });
+                    
+                    document.getElementById('showing-count').textContent = filteredData.length;
+                    renderTable();
+                } catch (error) {
+                    console.error('Error applying filters:', error);
+                    alert('An error occurred while filtering. Please try again.');
+                } finally {
+                    isFiltering = false;
+                    document.body.style.cursor = 'default';
+                }
+            }
+            
+            // Debounced version of applyFilters
+            const debouncedApplyFilters = debounce(applyFilters, 300);
+            
+            // Function to reset filters
+            function resetFilters() {
+                if (isFiltering) return;
+                
+                try {
+                    isFiltering = true;
+                    document.body.style.cursor = 'wait';
+                    
+                    document.getElementById('price-min').value = '';
+                    document.getElementById('price-max').value = '';
+                    document.getElementById('days-old').value = '0';
+                    document.getElementById('district').value = '';
+                    document.getElementById('room-count').value = '';
+                    
+                    filteredData = [...propertyData];
+                    document.getElementById('showing-count').textContent = filteredData.length;
+                    renderTable();
+                } catch (error) {
+                    console.error('Error resetting filters:', error);
+                    alert('An error occurred while resetting filters. Please try again.');
+                } finally {
+                    isFiltering = false;
+                    document.body.style.cursor = 'default';
+                }
+            }
+            
+            // Function to populate filter dropdowns
+            function populateFilters() {
+                const districts = new Set();
+                const roomCounts = new Set();
+                
+                propertyData.forEach(property => {
+                    // Only add district if it's a valid string and not a URL
+                    if (property.district && 
+                        typeof property.district === 'string' && 
+                        !property.district.includes('http') && 
+                        property.district.length < 50) {
+                        districts.add(property.district);
+                    }
+                    
+                    // Only add room count if it resembles a valid room count format (like 2+1, 3+1, etc.)
+                    if (property.room_count && 
+                        typeof property.room_count === 'string' && 
+                        !property.room_count.includes('http') &&
+                        property.room_count.length < 10) {
+                        roomCounts.add(property.room_count);
+                    }
+                });
+                
+                const districtSelect = document.getElementById('district');
+                Array.from(districts).sort().forEach(district => {
+                    const option = document.createElement('option');
+                    option.value = district;
+                    option.textContent = district;
+                    districtSelect.appendChild(option);
+                });
+                
+                const roomCountSelect = document.getElementById('room-count');
+                Array.from(roomCounts).sort().forEach(roomCount => {
+                    const option = document.createElement('option');
+                    option.value = roomCount;
+                    option.textContent = roomCount;
+                    roomCountSelect.appendChild(option);
+                });
+            }
+            
+            // Function to render the table
+            function renderTable() {
+                const tbody = document.getElementById('property-list');
+                tbody.innerHTML = '';
+                
+                if (filteredData.length === 0) {
+                    const row = document.createElement('tr');
+                    const cell = document.createElement('td');
+                    cell.colSpan = 8;
+                    cell.textContent = 'No properties match your filters';
+                    cell.style.textAlign = 'center';
+                    cell.style.padding = '20px';
+                    row.appendChild(cell);
+                    tbody.appendChild(row);
+                    return;
+                }
+                
+                filteredData.forEach(property => {
+                    const row = document.createElement('tr');
+                    
+                    // Image cell
+                    const imageCell = document.createElement('td');
+                    imageCell.className = 'image-cell';
+                    if (property.image_links) {
+                        let firstImage = '';
+                        // Try to get the first image from the comma-separated list
+                        const imageLinks = property.image_links.split(',');
+                        for (let i = 0; i < imageLinks.length; i++) {
+                            const imgUrl = imageLinks[i].trim().replace(/^["']|["']$/g, '');
+                            if (imgUrl && imgUrl.startsWith('http')) {
+                                firstImage = imgUrl;
+                                break;
+                            }
+                        }
+                        
+                        if (firstImage) {
+                            const img = document.createElement('img');
+                            img.alt = property.title || 'Property image';
+                            
+                            // Use the image cache system
+                            imageCache.loadImage(firstImage, img);
+                            
+                            imageCell.appendChild(img);
+                        } else {
+                            imageCell.textContent = 'No valid image';
+                        }
+                    } else {
+                        imageCell.textContent = 'No image';
+                    }
+                    row.appendChild(imageCell);
+                    
+                    // Title cell
+                    const titleCell = document.createElement('td');
+                    titleCell.textContent = property.title;
+                    row.appendChild(titleCell);
+                    
+                    // District cell
+                    const districtCell = document.createElement('td');
+                    districtCell.textContent = property.district;
+                    row.appendChild(districtCell);
+                    
+                    // Room count cell
+                    const roomCountCell = document.createElement('td');
+                    roomCountCell.textContent = property.room_count;
+                    row.appendChild(roomCountCell);
+                    
+                    // Price cell
+                    const priceCell = document.createElement('td');
+                    priceCell.textContent = `${property.price} ${property.currency}`;
+                    row.appendChild(priceCell);
+                    
+                    // TL Price cell
+                    const priceTLCell = document.createElement('td');
+                    priceTLCell.textContent = property.price_tl_14x ? parseFloat(property.price_tl_14x).toLocaleString() + ' TL' : 'N/A';
+                    row.appendChild(priceTLCell);
+                    
+                    // Listing date cell
+                    const dateCell = document.createElement('td');
+                    dateCell.textContent = property.update_date;
+                    row.appendChild(dateCell);
+                    
+                    // Details cell
+                    const detailsCell = document.createElement('td');
+                    const detailsLink = document.createElement('a');
+                    detailsLink.href = property.url;
+                    detailsLink.textContent = 'View Details';
+                    detailsLink.target = '_blank';
+                    detailsCell.appendChild(detailsLink);
+                    row.appendChild(detailsCell);
+                    
+                    tbody.appendChild(row);
+                });
+            }
+            
+            // Load CSV data
+            function loadCSVData() {
+                fetch('property_details.csv')
+                    .then(response => {
+                        if (!response.ok) {
+                            throw new Error('Network response was not ok');
+                        }
+                        return response.text();
+                    })
+                    .then(text => {
+                        propertyData = parseCSV(text);
+                        filteredData = [...propertyData];
+                        
+                        document.getElementById('total-count').textContent = propertyData.length;
+                        document.getElementById('showing-count').textContent = propertyData.length;
+                        
+                        populateFilters();
+                        renderTable();
+                    })
+                    .catch(error => {
+                        console.error('Error loading CSV:', error);
+                        const tbody = document.getElementById('property-list');
+                        tbody.innerHTML = `<tr><td colspan="8" style="text-align: center; color: red; padding: 20px;">
+                            Error loading data: ${error.message}. Make sure property_details.csv exists in the same directory.
+                        </td></tr>`;
+                    });
+            }
+            
+            // Event listeners
+            document.getElementById('apply-filters').addEventListener('click', debouncedApplyFilters);
+            document.getElementById('reset-filters').addEventListener('click', resetFilters);
+            
+            // Add input event listeners to all filter inputs for potential auto-filtering
+            document.querySelectorAll('#filter-form input, #filter-form select').forEach(element => {
+                element.addEventListener('keypress', function(event) {
+                    // Prevent form submission on Enter key
+                    if (event.key === 'Enter') {
+                        event.preventDefault();
+                        debouncedApplyFilters();
+                    }
+                });
+            });
+            
+            // Initialize data loading
+            loadCSVData();
+            
+            // Initialize cache management
+            initializeCache();
+            
+            // Initialize cache system
+            function initializeCache() {
+                try {
+                    // Clear expired items on load
+                    let clearedCount = 0;
+                    let totalItems = 0;
+                    
+                    for (let i = 0; i < localStorage.length; i++) {
+                        const key = localStorage.key(i);
+                        if (key.startsWith(IMAGE_CACHE_PREFIX)) {
+                            totalItems++;
+                            try {
+                                const cacheItem = JSON.parse(localStorage.getItem(key));
+                                if (Date.now() - cacheItem.timestamp > CACHE_EXPIRATION) {
+                                    localStorage.removeItem(key);
+                                    clearedCount++;
+                                }
+                            } catch (e) {
+                                // Invalid cache item, remove it
+                                localStorage.removeItem(key);
+                                clearedCount++;
+                            }
+                        }
+                    }
+                    
+                    // Calculate cache usage
+                    let cacheSize = 0;
+                    for (let i = 0; i < localStorage.length; i++) {
+                        const key = localStorage.key(i);
+                        if (key.startsWith(IMAGE_CACHE_PREFIX)) {
+                            cacheSize += localStorage.getItem(key).length * 2; // Approximate size in bytes
+                        }
+                    }
+                    
+                    const cacheSizeMB = (cacheSize / (1024 * 1024)).toFixed(2);
+                    const cacheMaxMB = (MAX_CACHE_SIZE / (1024 * 1024)).toFixed(0);
+                    
+                    // Update cache status display
+                    const cacheStatusElement = document.getElementById('cache-status');
+                    if (cacheStatusElement) {
+                        cacheStatusElement.innerHTML = `
+                            Image Cache: ${cacheSizeMB}MB / ${cacheMaxMB}MB | 
+                            ${totalItems - clearedCount} valid images | 
+                            ${clearedCount} expired removed
+                        `;
+                    }
+                    
+                    console.log(`Cache initialized: ${totalItems} total items, ${clearedCount} expired items removed`);
+                } catch (error) {
+                    console.error('Error initializing cache:', error);
+                }
+            }
+        });
+    </script>
+</body>
+</html>
