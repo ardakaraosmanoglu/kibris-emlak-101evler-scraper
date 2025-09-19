@@ -154,8 +154,8 @@ def check_blocked_html(html):
     return False
 
 def handle_access_blocked():
-    """Erişim engellendiğinde yapılacak işlemler: konfigurasyon süresince bekle ve tekrar dene"""
-    cooldown_minutes = config.TIMING['cooldown_minutes']
+    """Erişim engellendiğinde yapılacak işlemler: 3 dakika bekle ve tekrar dene"""
+    cooldown_minutes = 3
     print(f"!!! Erişim engellendi. {cooldown_minutes} dakika bekleniyor ve tekrar denenecek... !!!")
     # 3 dakika bekle
     time.sleep(cooldown_minutes * 60)
@@ -391,7 +391,7 @@ async def main():
             # Add a random component to the delay to make the scraping pattern less predictable
             # Only wait if we're fetching the next page (not on the last page)
             if page_num < max_search_pages and page_num not in existing_search_pages:
-                random_delay = config.TIMING['search_page_delay_base'] + (page_num % 3) * 0.3
+                random_delay = 1.2 + (page_num % 3) * 0.3
                 print(f"Waiting {random_delay:.1f} seconds before next search page...")
                 await asyncio.sleep(random_delay)
 
@@ -426,7 +426,7 @@ async def main():
         batch_size = config.BATCH_SIZE 
         
         # Create subdirectory for failed listings to retry later
-        failed_dir = os.path.join(output_dir, config.FAILED_DIR)
+        failed_dir = os.path.join(output_dir, "failed")
         if not os.path.exists(failed_dir):
             os.makedirs(failed_dir)
             
@@ -474,7 +474,7 @@ async def main():
              
              if i + batch_size < len(tasks):
                  # Konfigürasyondan batch delay
-                 batch_delay = config.TIMING['batch_delay_min'] + random.random() * (config.TIMING['batch_delay_max'] - config.TIMING['batch_delay_min'])
+                 batch_delay = config.DELAY_BETWEEN_BATCHES
                  print(f"Waiting {batch_delay:.1f} seconds before next batch...")
                  await asyncio.sleep(batch_delay)
 
@@ -508,8 +508,8 @@ async def scrape_and_save_listing(url, crawler, output_dir):
             exit(1)  # İkinci denemede de engellenirse sonlandır
     await save_html_to_file(html_content, url, output_dir)
     # Add a slight random variation to the delay based on config
-    random_delay = config.TIMING['listing_delay_min'] + random.random() * (config.TIMING['listing_delay_max'] - config.TIMING['listing_delay_min'])
-    await asyncio.sleep(random_delay)
+    delay = config.DELAY_BETWEEN_REQUESTS
+    await asyncio.sleep(delay)
 
 if __name__ == "__main__":
     asyncio.run(main())
